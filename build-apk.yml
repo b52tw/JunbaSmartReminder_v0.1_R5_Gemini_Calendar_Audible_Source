@@ -1,0 +1,87 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Locate Android SDK manager and install SDK 35
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "SDK_ROOT=$SDK_ROOT"
+          if [[ ! -d "$SDK_ROOT" ]]; then
+            echo "::error::Android SDK root does not exist: $SDK_ROOT"
+            exit 1
+          fi
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -maxdepth 4 -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          if [[ -z "$SDKMANAGER" || ! -x "$SDKMANAGER" ]]; then
+            echo "::error::sdkmanager is missing from $SDK_ROOT/cmdline-tools"
+            find "$SDK_ROOT" -maxdepth 3 -type d | head -n 60 || true
+            exit 1
+          fi
+          echo "Using SDK manager: $SDKMANAGER"
+          "$SDKMANAGER" --version
+          (yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses) >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          test -f "$SDK_ROOT/platforms/android-35/android.jar"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "Android SDK 35 installed successfully"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Verify Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f settings.gradle
+          test -f build.gradle
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/tw/junba/reminder/MainActivity.java
+          test -f app/src/main/java/tw/junba/reminder/NativeLinkStore.java
+          test -f app/src/main/java/tw/junba/reminder/CalendarMirrorStore.java
+          test -f app/src/main/java/tw/junba/reminder/SecretStore.java
+          gradle --version
+          echo 'Project structure OK'
+
+      - name: Build debug APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Verify output APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JunbaSmartReminder-v0.1-R5-debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
